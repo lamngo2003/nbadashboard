@@ -52,10 +52,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# NBA API Headers - Required to mimic a browser request
+nba_headers = {
+    'Host': 'stats.nba.com',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Referer': 'https://stats.nba.com/',
+    'Origin': 'https://stats.nba.com'
+}
+
+# Current NBA season
+current_season = "2023-24"
+
 # Cache function to avoid repeated API calls
 @st.cache_data(ttl=3600*24)  # Cache for 24 hours
 def fetch_nba_data():
-    """Fetch NBA data from the balldontlie API"""
+    """Fetch NBA data from the official NBA Stats API"""
     
     # Create data directory if it doesn't exist
     if not os.path.exists('data'):
@@ -72,50 +87,237 @@ def fetch_nba_data():
     # If no cache or it's outdated, fetch new data
     data = {}
     
-    # Fetch teams
-    teams_response = requests.get('https://www.balldontlie.io/api/v1/teams')
-    data['teams'] = teams_response.json()['data']
+    # Fetch teams with error handling
+    try:
+        teams_url = "https://stats.nba.com/stats/leaguestandingsv3?LeagueID=00&Season={}&SeasonType=Regular%20Season".format(current_season)
+        teams_response = requests.get(teams_url, headers=nba_headers, timeout=10)
+        teams_response.raise_for_status()
+        
+        teams_data = teams_response.json()
+        if 'resultSets' in teams_data:
+            # Extract team data from the response
+            standings = teams_data['resultSets'][0]
+            headers = standings['headers']
+            rows = standings['rowSet']
+            
+            teams = []
+            for row in rows:
+                team = {
+                    "id": row[0],  # TeamID
+                    "city": row[5],  # TeamCity
+                    "name": row[6],  # TeamName
+                    "full_name": f"{row[5]} {row[6]}",  # TeamCity + TeamName
+                    "abbreviation": row[4],  # TeamAbbreviation
+                    "conference": row[7],  # Conference
+                    "division": row[8],  # Division
+                    "wins": row[13],  # WINS
+                    "losses": row[14],  # LOSSES
+                    "win_pct": row[15],  # WIN_PCT
+                    "points_pg": row[23],  # PTS
+                    "opp_points_pg": row[24],  # OPP_PTS
+                }
+                teams.append(team)
+            
+            data['teams'] = teams
+        else:
+            st.error("Teams API response missing expected data structure")
+            data['teams'] = []
+            
+        time.sleep(1)  # Respect rate limits
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching teams data: {e}")
+        data['teams'] = []
+    except ValueError as e:
+        st.error(f"Error parsing JSON from API: {e}")
+        data['teams'] = []
     
-    # Fetch players (paginated)
-    players = []
-    page = 1
-    per_page = 100
-    total_pages = 1
+    # Fetch players with error handling
+    try:
+        players_url = "https://stats.nba.com/stats/leaguedashplayerstats?College=&Conference=&Country=&DateFrom=&DateTo=&Division=&DraftPick=&DraftYear=&GameScope=&GameSegment=&Height=&LastNGames=0&LeagueID=00&Location=&MeasureType=Base&Month=0&OpponentTeamID=0&Outcome=&PORound=0&PaceAdjust=N&PerMode=PerGame&Period=0&PlayerExperience=&PlayerPosition=&PlusMinus=N&Rank=N&Season={}&SeasonSegment=&SeasonType=Regular+Season&ShotClockRange=&StarterBench=&TeamID=0&TwoWay=0&VsConference=&VsDivision=&Weight=".format(current_season)
+        players_response = requests.get(players_url, headers=nba_headers, timeout=10)
+        players_response.raise_for_status()
+        
+        players_data = players_response.json()
+        if 'resultSets' in players_data:
+            # Extract player data from the response
+            player_stats = players_data['resultSets'][0]
+            headers = player_stats['headers']
+            rows = player_stats['rowSet']
+            
+            # Create a dictionary to map header names to indices
+            header_indices = {header: idx for idx, header in enumerate(headers)}
+            
+            players = []
+            for row in rows:
+                player = {
+                    "id": row[header_indices["PLAYER_ID"]],
+                    "name": row[header_indices["PLAYER_NAME"]],
+                    "team_id": row[header_indices["TEAM_ID"]],
+                    "team_abbreviation": row[header_indices["TEAM_ABBREVIATION"]],
+                    "age": row[header_indices["AGE"]],
+                    "gp": row[header_indices["GP"]],
+                    "pts": row[header_indices["PTS"]],
+                    "reb": row[header_indices["REB"]],
+                    "ast": row[header_indices["AST"]],
+                    "stl": row[header_indices["STL"]],
+                    "blk": row[header_indices["BLK"]],
+                    "fg_pct": row[header_indices["FG_PCT"]],
+                    "fg3_pct": row[header_indices["FG3_PCT"]],
+                    "ft_pct": row[header_indices["FT_PCT"]],
+                    "min": row[header_indices["MIN"]],
+                    "tov": row[header_indices["TOV"]],
+                }
+                players.append(player)
+            
+            data['players'] = players
+        else:
+            st.error("Players API response missing expected data structure")
+            data['players'] = []
+            
+        time.sleep(1)  # Respect rate limits
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching players data: {e}")
+        data['players'] = []
+    except ValueError as e:
+        st.error(f"Error parsing JSON from API: {e}")
+        data['players'] = []
     
-    while page <= total_pages:
-        players_response = requests.get(f'https://www.balldontlie.io/api/v1/players?page={page}&per_page={per_page}')
-        response_data = players_response.json()
-        players.extend(response_data['data'])
-        total_pages = response_data['meta']['total_pages']
-        page += 1
-        time.sleep(1)  # Avoid rate limiting
-    
-    data['players'] = players
-    
-    # Fetch recent games
-    today = datetime.now()
-    start_date = (today - timedelta(days=30)).strftime('%Y-%m-%d')
-    end_date = today.strftime('%Y-%m-%d')
-    
-    games_response = requests.get(
-        f'https://www.balldontlie.io/api/v1/games?start_date={start_date}&end_date={end_date}&per_page=100'
-    )
-    data['games'] = games_response.json()['data']
-    
-    # Fetch stats for players
-    stats = []
-    for i in range(1, 4):  # Get stats from a few recent pages
-        stats_response = requests.get(f'https://www.balldontlie.io/api/v1/stats?page={i}&per_page=100')
-        stats.extend(stats_response.json()['data'])
-        time.sleep(1)  # Avoid rate limiting
-    
-    data['stats'] = stats
+    # Fetch recent games with error handling
+    try:
+        # Get the current date and date 30 days ago
+        today = datetime.now()
+        thirty_days_ago = today - timedelta(days=30)
+        
+        # Format dates for the API
+        from_date = thirty_days_ago.strftime('%m/%d/%Y')
+        to_date = today.strftime('%m/%d/%Y')
+        
+        games_url = f"https://stats.nba.com/stats/leaguegamelog?Counter=1000&DateFrom={from_date}&DateTo={to_date}&Direction=DESC&LeagueID=00&PlayerOrTeam=T&Season={current_season}&SeasonType=Regular+Season&Sorter=DATE"
+        games_response = requests.get(games_url, headers=nba_headers, timeout=10)
+        games_response.raise_for_status()
+        
+        games_data = games_response.json()
+        if 'resultSets' in games_data:
+            # Extract game data from the response
+            game_logs = games_data['resultSets'][0]
+            headers = game_logs['headers']
+            rows = game_logs['rowSet']
+            
+            # Create a dictionary to map header names to indices
+            header_indices = {header: idx for idx, header in enumerate(headers)}
+            
+            # Process game logs to create a list of games
+            games_dict = {}  # Use a dictionary to avoid duplicates (each game appears twice, once for each team)
+            
+            for row in rows:
+                game_id = row[header_indices["GAME_ID"]]
+                team_id = row[header_indices["TEAM_ID"]]
+                team_abbreviation = row[header_indices["TEAM_ABBREVIATION"]]
+                team_name = row[header_indices["TEAM_NAME"]]
+                game_date = row[header_indices["GAME_DATE"]]
+                matchup = row[header_indices["MATCHUP"]]
+                wl = row[header_indices["WL"]]
+                pts = row[header_indices["PTS"]]
+                
+                # Parse matchup to determine home/away and opponent
+                is_home = "@" not in matchup
+                opponent_abbr = matchup.split()[-1]
+                
+                # If this game is already in our dictionary
+                if game_id in games_dict:
+                    existing_game = games_dict[game_id]
+                    
+                    # If current team is home, update home team info
+                    if is_home:
+                        existing_game["home_team_id"] = team_id
+                        existing_game["home_team_abbreviation"] = team_abbreviation
+                        existing_game["home_team_name"] = team_name
+                        existing_game["home_team_score"] = pts
+                    else:
+                        existing_game["visitor_team_id"] = team_id
+                        existing_game["visitor_team_abbreviation"] = team_abbreviation
+                        existing_game["visitor_team_name"] = team_name
+                        existing_game["visitor_team_score"] = pts
+                else:
+                    # Create a new game entry
+                    game = {
+                        "id": game_id,
+                        "date": game_date,
+                    }
+                    
+                    if is_home:
+                        game["home_team_id"] = team_id
+                        game["home_team_abbreviation"] = team_abbreviation
+                        game["home_team_name"] = team_name
+                        game["home_team_score"] = pts
+                    else:
+                        game["visitor_team_id"] = team_id
+                        game["visitor_team_abbreviation"] = team_abbreviation
+                        game["visitor_team_name"] = team_name
+                        game["visitor_team_score"] = pts
+                    
+                    games_dict[game_id] = game
+            
+            # Convert dictionary to list
+            games = list(games_dict.values())
+            
+            # Filter out incomplete games
+            complete_games = []
+            for game in games:
+                if all(key in game for key in ["home_team_id", "visitor_team_id", "home_team_score", "visitor_team_score"]):
+                    complete_games.append(game)
+            
+            data['games'] = complete_games
+        else:
+            st.error("Games API response missing expected data structure")
+            data['games'] = []
+            
+        time.sleep(1)  # Respect rate limits
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching games data: {e}")
+        data['games'] = []
+    except ValueError as e:
+        st.error(f"Error parsing JSON from API: {e}")
+        data['games'] = []
     
     # Save to cache file
     with open(cache_file, 'w') as f:
         json.dump(data, f)
     
     return data
+
+def get_sample_data():
+    """Return sample data when API fails"""
+    # Sample teams data
+    teams = [
+        {"id": 1610612737, "abbreviation": "ATL", "city": "Atlanta", "name": "Hawks", "full_name": "Atlanta Hawks", "conference": "East", "division": "Southeast", "wins": 32, "losses": 40, "win_pct": 0.444, "points_pg": 118.2, "opp_points_pg": 120.5},
+        {"id": 1610612738, "abbreviation": "BOS", "city": "Boston", "name": "Celtics", "full_name": "Boston Celtics", "conference": "East", "division": "Atlantic", "wins": 62, "losses": 16, "win_pct": 0.795, "points_pg": 120.8, "opp_points_pg": 108.2},
+        {"id": 1610612751, "abbreviation": "BKN", "city": "Brooklyn", "name": "Nets", "full_name": "Brooklyn Nets", "conference": "East", "division": "Atlantic", "wins": 30, "losses": 48, "win_pct": 0.385, "points_pg": 109.2, "opp_points_pg": 114.5},
+        {"id": 1610612766, "abbreviation": "CHA", "city": "Charlotte", "name": "Hornets", "full_name": "Charlotte Hornets", "conference": "East", "division": "Southeast", "wins": 19, "losses": 59, "win_pct": 0.244, "points_pg": 106.6, "opp_points_pg": 116.8},
+        {"id": 1610612741, "abbreviation": "CHI", "city": "Chicago", "name": "Bulls", "full_name": "Chicago Bulls", "conference": "East", "division": "Central", "wins": 37, "losses": 41, "win_pct": 0.474, "points_pg": 113.5, "opp_points_pg": 114.2}
+    ]
+    
+    # Sample players data
+    players = [
+        {"id": 2544, "name": "LeBron James", "team_id": 1610612747, "team_abbreviation": "LAL", "age": 39, "gp": 71, "pts": 25.7, "reb": 7.3, "ast": 8.3, "stl": 1.3, "blk": 0.5, "fg_pct": 0.54, "fg3_pct": 0.41, "ft_pct": 0.75, "min": 35.3, "tov": 3.5},
+        {"id": 201939, "name": "Stephen Curry", "team_id": 1610612744, "team_abbreviation": "GSW", "age": 36, "gp": 74, "pts": 26.4, "reb": 4.5, "ast": 5.1, "stl": 0.7, "blk": 0.4, "fg_pct": 0.45, "fg3_pct": 0.40, "ft_pct": 0.92, "min": 33.5, "tov": 2.8},
+        {"id": 203507, "name": "Giannis Antetokounmpo", "team_id": 1610612749, "team_abbreviation": "MIL", "age": 29, "gp": 73, "pts": 30.4, "reb": 11.5, "ast": 6.5, "stl": 1.2, "blk": 1.1, "fg_pct": 0.61, "fg3_pct": 0.27, "ft_pct": 0.65, "min": 35.2, "tov": 3.4},
+        {"id": 201142, "name": "Kevin Durant", "team_id": 1610612756, "team_abbreviation": "PHX", "age": 35, "gp": 75, "pts": 27.1, "reb": 6.6, "ast": 5.0, "stl": 0.9, "blk": 1.2, "fg_pct": 0.52, "fg3_pct": 0.41, "ft_pct": 0.85, "min": 36.0, "tov": 3.3},
+        {"id": 203999, "name": "Nikola Jokic", "team_id": 1610612743, "team_abbreviation": "DEN", "age": 29, "gp": 79, "pts": 26.4, "reb": 12.4, "ast": 9.0, "stl": 1.4, "blk": 0.9, "fg_pct": 0.58, "fg3_pct": 0.35, "ft_pct": 0.81, "min": 34.6, "tov": 3.0}
+    ]
+    
+    # Sample games data
+    games = [
+        {"id": "0022300001", "date": "2023-10-24", "home_team_id": 1610612738, "home_team_abbreviation": "BOS", "home_team_name": "Boston Celtics", "home_team_score": 126, "visitor_team_id": 1610612752, "visitor_team_abbreviation": "NYK", "visitor_team_name": "New York Knicks", "visitor_team_score": 113},
+        {"id": "0022300002", "date": "2023-10-24", "home_team_id": 1610612747, "home_team_abbreviation": "LAL", "home_team_name": "Los Angeles Lakers", "home_team_score": 119, "visitor_team_id": 1610612744, "visitor_team_abbreviation": "GSW", "visitor_team_name": "Golden State Warriors", "visitor_team_score": 107},
+        {"id": "0022300003", "date": "2023-10-25", "home_team_id": 1610612749, "home_team_abbreviation": "MIL", "home_team_name": "Milwaukee Bucks", "home_team_score": 120, "visitor_team_id": 1610612756, "visitor_team_abbreviation": "PHX", "visitor_team_name": "Phoenix Suns", "visitor_team_score": 115}
+    ]
+    
+    return {
+        "teams": teams,
+        "players": players,
+        "games": games
+    }
 
 def prepare_dataframes(data):
     """Convert API data to pandas DataFrames"""
@@ -125,133 +327,32 @@ def prepare_dataframes(data):
     
     # Players DataFrame
     players_df = pd.DataFrame(data['players'])
-    # Extract team info from nested structure
-    players_df['team_id'] = players_df['team'].apply(lambda x: x['id'] if x else None)
-    players_df['team_name'] = players_df['team'].apply(lambda x: x['full_name'] if x else None)
-    players_df['team_abbreviation'] = players_df['team'].apply(lambda x: x['abbreviation'] if x else None)
     
     # Games DataFrame
     games_df = pd.DataFrame(data['games'])
-    # Extract home and visitor team info
-    games_df['home_team_id'] = games_df['home_team'].apply(lambda x: x['id'])
-    games_df['home_team_name'] = games_df['home_team'].apply(lambda x: x['full_name'])
-    games_df['visitor_team_id'] = games_df['visitor_team'].apply(lambda x: x['id'])
-    games_df['visitor_team_name'] = games_df['visitor_team'].apply(lambda x: x['full_name'])
-    
-    # Stats DataFrame
-    stats_df = pd.DataFrame(data['stats'])
-    # Extract player and team info
-    stats_df['player_id'] = stats_df['player'].apply(lambda x: x['id'] if x else None)
-    stats_df['player_name'] = stats_df['player'].apply(lambda x: f"{x['first_name']} {x['last_name']}" if x else None)
-    stats_df['team_id'] = stats_df['team'].apply(lambda x: x['id'] if x else None)
-    stats_df['team_name'] = stats_df['team'].apply(lambda x: x['full_name'] if x else None)
-    stats_df['game_id'] = stats_df['game'].apply(lambda x: x['id'] if x else None)
     
     # Convert date strings to datetime
     games_df['date'] = pd.to_datetime(games_df['date'])
     
-    return teams_df, players_df, games_df, stats_df
+    return teams_df, players_df, games_df
 
-def calculate_team_stats(games_df):
-    """Calculate team performance metrics"""
-    team_stats = {}
+def calculate_team_stats(teams_df, games_df):
+    """Calculate additional team performance metrics"""
+    # Most of the team stats are already calculated in the API response
+    # We'll just add a few more metrics
     
-    for _, game in games_df.iterrows():
-        # Skip games without scores
-        if pd.isna(game['home_team_score']) or pd.isna(game['visitor_team_score']):
-            continue
-            
-        home_id = game['home_team_id']
-        visitor_id = game['visitor_team_id']
-        
-        # Initialize team stats if not exists
-        if home_id not in team_stats:
-            team_stats[home_id] = {
-                'team_name': game['home_team_name'],
-                'games_played': 0,
-                'wins': 0,
-                'losses': 0,
-                'points_scored': 0,
-                'points_allowed': 0
-            }
-            
-        if visitor_id not in team_stats:
-            team_stats[visitor_id] = {
-                'team_name': game['visitor_team_name'],
-                'games_played': 0,
-                'wins': 0,
-                'losses': 0,
-                'points_scored': 0,
-                'points_allowed': 0
-            }
-        
-        # Update home team stats
-        team_stats[home_id]['games_played'] += 1
-        team_stats[home_id]['points_scored'] += game['home_team_score']
-        team_stats[home_id]['points_allowed'] += game['visitor_team_score']
-        
-        # Update visitor team stats
-        team_stats[visitor_id]['games_played'] += 1
-        team_stats[visitor_id]['points_scored'] += game['visitor_team_score']
-        team_stats[visitor_id]['points_allowed'] += game['home_team_score']
-        
-        # Update wins and losses
-        if game['home_team_score'] > game['visitor_team_score']:
-            team_stats[home_id]['wins'] += 1
-            team_stats[visitor_id]['losses'] += 1
-        else:
-            team_stats[home_id]['losses'] += 1
-            team_stats[visitor_id]['wins'] += 1
+    team_stats = teams_df.copy()
     
-    # Convert to DataFrame and calculate additional metrics
-    team_stats_df = pd.DataFrame.from_dict(team_stats, orient='index').reset_index()
-    team_stats_df = team_stats_df.rename(columns={'index': 'team_id'})
+    # Calculate point differential
+    team_stats['point_differential'] = team_stats['points_pg'] - team_stats['opp_points_pg']
     
-    # Calculate win percentage and point differential
-    team_stats_df['win_pct'] = team_stats_df['wins'] / team_stats_df['games_played']
-    team_stats_df['point_differential'] = team_stats_df['points_scored'] - team_stats_df['points_allowed']
-    team_stats_df['points_per_game'] = team_stats_df['points_scored'] / team_stats_df['games_played']
-    team_stats_df['points_allowed_per_game'] = team_stats_df['points_allowed'] / team_stats_df['games_played']
-    
-    return team_stats_df
-
-def calculate_player_stats(stats_df):
-    """Calculate player performance metrics"""
-    # Group by player and calculate averages
-    player_stats = stats_df.groupby(['player_id', 'player_name', 'team_id', 'team_name']).agg({
-        'pts': 'mean',
-        'reb': 'mean',
-        'ast': 'mean',
-        'stl': 'mean',
-        'blk': 'mean',
-        'fg_pct': 'mean',
-        'fg3_pct': 'mean',
-        'ft_pct': 'mean',
-        'turnover': 'mean',
-        'min': lambda x: pd.to_numeric(x.str.replace(':', '.'), errors='coerce').mean()
-    }).reset_index()
-    
-    # Rename columns to indicate they are averages
-    player_stats = player_stats.rename(columns={
-        'pts': 'ppg',
-        'reb': 'rpg',
-        'ast': 'apg',
-        'stl': 'spg',
-        'blk': 'bpg',
-        'turnover': 'topg',
-        'min': 'mpg'
+    # Rename columns for consistency with the rest of the app
+    team_stats = team_stats.rename(columns={
+        'points_pg': 'points_per_game',
+        'opp_points_pg': 'points_allowed_per_game'
     })
     
-    # Calculate games played
-    games_played = stats_df.groupby(['player_id']).size().reset_index(name='games_played')
-    player_stats = player_stats.merge(games_played, on='player_id')
-    
-    # Calculate PER (simplified version)
-    player_stats['per'] = (player_stats['ppg'] + player_stats['rpg'] + 
-                          player_stats['apg'] + player_stats['spg'] + 
-                          player_stats['bpg'] - player_stats['topg']) / 5
-    
-    return player_stats
+    return team_stats
 
 # Main application
 def main():
@@ -260,10 +361,23 @@ def main():
     
     # Fetch data
     with st.spinner('Fetching NBA data...'):
-        data = fetch_nba_data()
-        teams_df, players_df, games_df, stats_df = prepare_dataframes(data)
-        team_stats_df = calculate_team_stats(games_df)
-        player_stats_df = calculate_player_stats(stats_df)
+        try:
+            data = fetch_nba_data()
+            
+            # Check if we got empty data from API
+            if not data.get('teams') or not data.get('players'):
+                st.warning("Could not fetch complete data from the NBA API. Using sample data instead.")
+                data = get_sample_data()
+                st.info("⚠️ Using sample data for demonstration. The real API data is currently unavailable.")
+            
+            teams_df, players_df, games_df = prepare_dataframes(data)
+            team_stats_df = calculate_team_stats(teams_df, games_df)
+        except Exception as e:
+            st.error(f"Error processing NBA data: {e}")
+            st.info("⚠️ Using sample data for demonstration. The real API data is currently unavailable.")
+            data = get_sample_data()
+            teams_df, players_df, games_df = prepare_dataframes(data)
+            team_stats_df = calculate_team_stats(teams_df, games_df)
     
     # Sidebar filters
     st.sidebar.title("Filters")
@@ -275,13 +389,13 @@ def main():
     
     # Filter data based on team selection
     if selected_team != all_teams_option:
-        filtered_team_stats = team_stats_df[team_stats_df['team_name'] == selected_team]
-        filtered_player_stats = player_stats_df[player_stats_df['team_name'] == selected_team]
+        filtered_team_stats = team_stats_df[team_stats_df['full_name'] == selected_team]
+        filtered_players = players_df[players_df['team_abbreviation'] == filtered_team_stats.iloc[0]['abbreviation']]
         filtered_games = games_df[(games_df['home_team_name'] == selected_team) | 
                                  (games_df['visitor_team_name'] == selected_team)]
     else:
         filtered_team_stats = team_stats_df
-        filtered_player_stats = player_stats_df
+        filtered_players = players_df
         filtered_games = games_df
     
     # Date range filter
@@ -301,17 +415,16 @@ def main():
                                            (filtered_games['date'].dt.date <= end_date)]
     
     # Stat type for player comparison
-    stat_options = ['ppg', 'rpg', 'apg', 'spg', 'bpg', 'fg_pct', 'fg3_pct', 'ft_pct', 'per']
+    stat_options = ['pts', 'reb', 'ast', 'stl', 'blk', 'fg_pct', 'fg3_pct', 'ft_pct']
     stat_labels = {
-        'ppg': 'Points Per Game',
-        'rpg': 'Rebounds Per Game',
-        'apg': 'Assists Per Game',
-        'spg': 'Steals Per Game',
-        'bpg': 'Blocks Per Game',
+        'pts': 'Points Per Game',
+        'reb': 'Rebounds Per Game',
+        'ast': 'Assists Per Game',
+        'stl': 'Steals Per Game',
+        'blk': 'Blocks Per Game',
         'fg_pct': 'Field Goal %',
         'fg3_pct': '3-Point %',
-        'ft_pct': 'Free Throw %',
-        'per': 'Player Efficiency Rating'
+        'ft_pct': 'Free Throw %'
     }
     selected_stat = st.sidebar.selectbox("Player Stat Comparison", 
                                         options=stat_options,
@@ -332,7 +445,7 @@ def main():
             # Sort by win percentage
             standings = filtered_team_stats.sort_values('win_pct', ascending=False).reset_index(drop=True)
             standings['rank'] = standings.index + 1
-            standings_display = standings[['rank', 'team_name', 'wins', 'losses', 'win_pct']]
+            standings_display = standings[['rank', 'full_name', 'wins', 'losses', 'win_pct']]
             standings_display['win_pct'] = standings_display['win_pct'].apply(lambda x: f"{x:.3f}")
             standings_display.columns = ['Rank', 'Team', 'Wins', 'Losses', 'Win %']
             
@@ -351,7 +464,7 @@ def main():
             off_data = filtered_team_stats.sort_values('points_per_game', ascending=False).head(10)
             fig.add_trace(
                 go.Bar(
-                    x=off_data['team_name'],
+                    x=off_data['full_name'],
                     y=off_data['points_per_game'],
                     marker_color='#17408B',
                     name="PPG"
@@ -363,7 +476,7 @@ def main():
             def_data = filtered_team_stats.sort_values('points_allowed_per_game', ascending=True).head(10)
             fig.add_trace(
                 go.Bar(
-                    x=def_data['team_name'],
+                    x=def_data['full_name'],
                     y=def_data['points_allowed_per_game'],
                     marker_color='#C9082A',
                     name="Opp PPG"
@@ -447,13 +560,13 @@ def main():
     with col2:
         st.markdown('<div class="sub-header">Player Performance</div>', unsafe_allow_html=True)
         
-        if not filtered_player_stats.empty:
+        if not filtered_players.empty:
             # Top players by selected stat
             st.markdown('<div class="card">', unsafe_allow_html=True)
             st.subheader(f"Top Players by {stat_labels[selected_stat]}")
             
             # Filter out players with few games
-            qualified_players = filtered_player_stats[filtered_player_stats['games_played'] >= 5]
+            qualified_players = filtered_players[filtered_players['gp'] >= 5]
             
             if not qualified_players.empty:
                 # Sort by selected stat
@@ -461,12 +574,12 @@ def main():
                 
                 fig = px.bar(
                     top_players,
-                    x='player_name',
+                    x='name',
                     y=selected_stat,
-                    color='team_name',
+                    color='team_abbreviation',
                     text=top_players[selected_stat].round(1),
                     title=f"Top 10 Players - {stat_labels[selected_stat]}",
-                    labels={'player_name': 'Player', selected_stat: stat_labels[selected_stat]}
+                    labels={'name': 'Player', selected_stat: stat_labels[selected_stat]}
                 )
                 
                 fig.update_layout(xaxis_tickangle=45, height=400)
@@ -482,11 +595,11 @@ def main():
                 st.markdown('<div class="card">', unsafe_allow_html=True)
                 st.subheader(f"{selected_team} Player Comparison")
                 
-                team_players = filtered_player_stats[filtered_player_stats['team_name'] == selected_team]
+                team_players = filtered_players[filtered_players['team_abbreviation'] == filtered_team_stats.iloc[0]['abbreviation']]
                 
                 if not team_players.empty:
                     # Allow selection of players to compare
-                    player_options = team_players['player_name'].tolist()
+                    player_options = team_players['name'].tolist()
                     
                     if len(player_options) >= 2:
                         selected_players = st.multiselect(
@@ -497,10 +610,10 @@ def main():
                         
                         if selected_players:
                             # Filter for selected players
-                            players_to_compare = team_players[team_players['player_name'].isin(selected_players)]
+                            players_to_compare = team_players[team_players['name'].isin(selected_players)]
                             
                             # Create radar chart
-                            categories = ['ppg', 'rpg', 'apg', 'spg', 'bpg']
+                            categories = ['pts', 'reb', 'ast', 'stl', 'blk']
                             category_labels = [stat_labels[cat] for cat in categories]
                             
                             fig = go.Figure()
@@ -510,7 +623,7 @@ def main():
                                     r=[player[cat] for cat in categories],
                                     theta=category_labels,
                                     fill='toself',
-                                    name=player['player_name']
+                                    name=player['name']
                                 ))
                             
                             fig.update_layout(
@@ -588,7 +701,7 @@ def main():
             y='points_per_game',
             size='win_pct',
             color='win_pct',
-            hover_name='team_name',
+            hover_name='full_name',
             size_max=20,
             color_continuous_scale=px.colors.sequential.Blues,
             labels={
@@ -629,15 +742,15 @@ def main():
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Player Statistics")
     
-    if not filtered_player_stats.empty:
+    if not filtered_players.empty:
         # Allow filtering by minimum games played
         min_games = st.slider("Minimum Games Played", 1, 20, 5)
-        qualified_players = filtered_player_stats[filtered_player_stats['games_played'] >= min_games]
+        qualified_players = filtered_players[filtered_players['gp'] >= min_games]
         
         if not qualified_players.empty:
             # Select columns to display
-            display_cols = ['player_name', 'team_name', 'games_played', 'ppg', 'rpg', 'apg', 
-                           'spg', 'bpg', 'fg_pct', 'fg3_pct', 'ft_pct', 'per']
+            display_cols = ['name', 'team_abbreviation', 'gp', 'pts', 'reb', 'ast', 
+                           'stl', 'blk', 'fg_pct', 'fg3_pct', 'ft_pct', 'min']
             
             # Format percentages
             formatted_players = qualified_players.copy()
@@ -645,23 +758,23 @@ def main():
                 formatted_players[col] = formatted_players[col].apply(lambda x: f"{x:.3f}" if pd.notna(x) else "N/A")
             
             # Round other stats to 1 decimal place
-            for col in ['ppg', 'rpg', 'apg', 'spg', 'bpg', 'per']:
+            for col in ['pts', 'reb', 'ast', 'stl', 'blk']:
                 formatted_players[col] = formatted_players[col].round(1)
             
             # Rename columns for display
             display_df = formatted_players[display_cols].rename(columns={
-                'player_name': 'Player',
-                'team_name': 'Team',
-                'games_played': 'GP',
-                'ppg': 'PPG',
-                'rpg': 'RPG',
-                'apg': 'APG',
-                'spg': 'SPG',
-                'bpg': 'BPG',
+                'name': 'Player',
+                'team_abbreviation': 'Team',
+                'gp': 'GP',
+                'pts': 'PPG',
+                'reb': 'RPG',
+                'ast': 'APG',
+                'stl': 'SPG',
+                'blk': 'BPG',
                 'fg_pct': 'FG%',
                 'fg3_pct': '3P%',
                 'ft_pct': 'FT%',
-                'per': 'PER'
+                'min': 'MPG'
             })
             
             # Add sorting capability
@@ -677,7 +790,7 @@ def main():
     st.markdown("""
     <div style="text-align: center; margin-top: 30px; color: #666;">
         <p>Data last updated: {}</p>
-        <p>Data source: balldontlie API</p>
+        <p>Data source: NBA Stats API</p>
     </div>
     """.format(datetime.now().strftime('%Y-%m-%d')), unsafe_allow_html=True)
 
